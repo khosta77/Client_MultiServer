@@ -18,9 +18,6 @@
 #include <string>
 #include <unordered_map>
 #include <tuple>
-#include <random>
-
-std::mt19937 mt(time(nullptr));
 
 struct PCout
 {
@@ -55,46 +52,27 @@ public:
 class Client
 {
 private:
-    int sock;
-    struct sockaddr_in addr;    
-
-    void socketInit()
-    {
-        sock = socket( AF_INET, SOCK_STREAM, 0 );
-        std::cout << "sock=" << sock << std::endl;
-        if( sock < 0 )
-            throw ServerException( ( "listener = " + std::to_string(sock) ) );
-    }
-    
-    void fillAddress( const std::string& IP, const int& PORT )
-    {
-        addr.sin_family = AF_INET;
-        addr.sin_port = htons(PORT);
-        addr.sin_addr.s_addr = inet_addr(IP.c_str());
-    }
-
-    void connectInit()
-    {
-        if( connect( sock, ( struct sockaddr* )&addr, sizeof(addr) ) < 0 )
-            throw ServerException( "connect" );
-    }
+    int _socket;
+    struct sockaddr_in _addr;    
 
     std::string readFromSock()
     {
         std::string receivedData;
-        char buffer[1024];
+        char *buffer = new char[1024];
         while(true)
         {
-            int bytesReceived = recv( sock, buffer, sizeof(buffer), 0 );
-            if(bytesReceived <= 0)
+            int bytesReceived = recv( _socket, buffer, 1024, 0 );
+            if( bytesReceived <= 0 )
             {
-                //std::cout << ( "readFromSock " + std::to_string(bytesReceived) + "\n" );
-                break;
+                delete []buffer;
+                receivedData.clear();
+                return "";
             }
             receivedData.append( buffer, bytesReceived );
             if( receivedData.back() == ';' )
                 break;
         }
+        delete []buffer;
         return receivedData;
     }
 
@@ -105,54 +83,43 @@ private:
         size_t totalSent = 0;
         while( totalSent < dataSize )
         {
-            int bytesSent = send( sock, ( dataPtr + totalSent ), ( dataSize - totalSent ), 0 );
+            int bytesSent = send( _socket, ( dataPtr + totalSent ), ( dataSize - totalSent ), 0 );
             if( bytesSent == -1 )
-            {
-                //std::cout << ( "sendToSock " + std::to_string(bytesSent) + "\n" );
                 break;
-            }
             totalSent += bytesSent;
         }
     }
 
-    int _x;
 public:
     Client() = delete;
 
-    Client( const std::string& IP, const int& PORT, const int& x = 0 )
+    Client( const std::string& IP, const int& PORT )
     {
-        //socketInit();
-        //fillAddress( IP, PORT );
-        //connectInit();
-        sock = socket( AF_INET, SOCK_STREAM, 0 );
-        std::cout << "sock=" << sock << std::endl;
-        if( sock < 0 )
-            throw ServerException( ( "listener = " + std::to_string(sock) ) );
+        _socket = socket( AF_INET, SOCK_STREAM, 0 );
+        if( _socket < 0 )
+            throw ServerException( ( "listener = " + std::to_string(_socket) ) );
 
-        addr.sin_family = AF_INET;
-        addr.sin_port = htons(PORT);
-        addr.sin_addr.s_addr = inet_addr(IP.c_str());
+        _addr.sin_family = AF_INET;
+        _addr.sin_port = htons(PORT);
+        _addr.sin_addr.s_addr = inet_addr(IP.c_str());
 
-        if( connect( sock, ( struct sockaddr* )&addr, sizeof(addr) ) < 0 )
+        if( connect( _socket, ( struct sockaddr* )&_addr, sizeof(_addr) ) < 0 )
             throw ServerException( "connect" );
-
-        _x = x;
+        std::cout << _socket << ") " << IP << ':' << PORT << std::endl;
     }
 
     Client( const Client& rhs )
     {
-        this->sock = rhs.sock;
-        this->addr = rhs.addr;
-        this->_x = rhs._x;
+        this->_socket = rhs._socket;
+        this->_addr = rhs._addr;
     }
 
     Client& operator=( const Client& rhs )
     {
-        if( rhs.sock != this->sock )
+        if( rhs._socket != this->_socket )
         {
-            this->sock = rhs.sock;
-            this->addr = rhs.addr;
-            this->_x = rhs._x;
+            this->_socket = rhs._socket;
+            this->_addr = rhs._addr;
         }
         return *this;
     }
@@ -161,27 +128,23 @@ public:
 
     void _close()
     {
-        close(sock);
+        close(_socket);
     }
 
     void run()
     {
-        int r = _x;
-        thread_cout(
-            std::cout << r << ' ' << sock << std::endl
-        );
-        for(;;)
+        int r = _socket;
+        for( size_t i = 0; i < 1000; ++i )
         {
             sendToSock( ( std::to_string(r) + ";" ) );
-            std::string msg = readFromSock();
-            
+            std::string msg = readFromSock(); 
             if(  !msg.empty() )
             {
                 thread_cout(
                     std::cout << msg << std::endl
                 );
             }
-            //std::this_thread::sleep_for(std::chrono::milliseconds(2'000)); 
+            // std::this_thread::sleep_for(std::chrono::milliseconds(20)); 
         }
     }
 
@@ -189,22 +152,27 @@ public:
 
 int main()
 {
-    const size_t I = 1'000;
+    const size_t I = 100;
     std::vector<Client> clients;
     for( size_t i = 0; i < I; ++i )
-    {
-        clients.emplace_back( "127.0.0.1", 8000, i );
-    }
-#if 1
+        clients.emplace_back( "127.0.0.1", 8000 );
+
     std::vector<std::thread> threads;
     for( size_t i = 0; i < I; ++i )
         threads.emplace_back( &Client::run, clients[i] );
     for( auto& it : threads )
-    {
-        //if( it.joinable() )
-        it.join();
+    {   
+        bool make = true;
+        while( make )
+        {
+            if( it.joinable() )
+            {
+                it.join();
+                make = false;
+            }
+        }
     }
-#endif
+
     for( auto& it : clients )
         it._close();
     return 0;
