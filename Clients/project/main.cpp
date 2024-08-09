@@ -1,0 +1,213 @@
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+
+#include <iostream>
+#include <algorithm>
+#include <vector>
+#include <map>
+#include <fstream>
+#include <stdio.h>
+#include <stdlib.h>
+#include <cmath>
+#include <thread>
+#include <chrono>
+#include <exception>
+#include <string>
+#include <unordered_map>
+#include <tuple>
+#include <random>
+
+std::mt19937 mt(time(nullptr));
+
+struct PCout
+{
+    static std::mutex& Mutex()
+    {
+        static std::mutex mut;
+        return mut;
+    }
+};
+
+#define thread_cout(msg) { \
+    PCout::Mutex().lock(); \
+    msg; \
+    PCout::Mutex().unlock(); \
+}
+
+class MyException : public std::exception
+{
+public:
+    explicit MyException( const std::string& msg ) : m_msg(msg) {}
+    const char *what() const noexcept override { return m_msg.c_str(); }
+private:
+    std::string m_msg;
+};
+
+class ServerException : public MyException
+{
+public:
+    ServerException( const std::string& m ) : MyException(m) {}
+};
+
+class Client
+{
+private:
+    int sock;
+    struct sockaddr_in addr;    
+
+    void socketInit()
+    {
+        sock = socket( AF_INET, SOCK_STREAM, 0 );
+        std::cout << "sock=" << sock << std::endl;
+        if( sock < 0 )
+            throw ServerException( ( "listener = " + std::to_string(sock) ) );
+    }
+    
+    void fillAddress( const std::string& IP, const int& PORT )
+    {
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons(PORT);
+        addr.sin_addr.s_addr = inet_addr(IP.c_str());
+    }
+
+    void connectInit()
+    {
+        if( connect( sock, ( struct sockaddr* )&addr, sizeof(addr) ) < 0 )
+            throw ServerException( "connect" );
+    }
+
+    std::string readFromSock()
+    {
+        std::string receivedData;
+        char buffer[1024];
+        while(true)
+        {
+            int bytesReceived = recv( sock, buffer, sizeof(buffer), 0 );
+            if(bytesReceived <= 0)
+            {
+                //std::cout << ( "readFromSock " + std::to_string(bytesReceived) + "\n" );
+                break;
+            }
+            receivedData.append( buffer, bytesReceived );
+            if( receivedData.back() == ';' )
+                break;
+        }
+        return receivedData;
+    }
+
+    void sendToSock( const std::string& msg )
+    {
+        const char* dataPtr = msg.c_str();
+        size_t dataSize = msg.length();
+        size_t totalSent = 0;
+        while( totalSent < dataSize )
+        {
+            int bytesSent = send( sock, ( dataPtr + totalSent ), ( dataSize - totalSent ), 0 );
+            if( bytesSent == -1 )
+            {
+                //std::cout << ( "sendToSock " + std::to_string(bytesSent) + "\n" );
+                break;
+            }
+            totalSent += bytesSent;
+        }
+    }
+
+    int _x;
+public:
+    Client() = delete;
+
+    Client( const std::string& IP, const int& PORT, const int& x = 0 )
+    {
+        //socketInit();
+        //fillAddress( IP, PORT );
+        //connectInit();
+        sock = socket( AF_INET, SOCK_STREAM, 0 );
+        std::cout << "sock=" << sock << std::endl;
+        if( sock < 0 )
+            throw ServerException( ( "listener = " + std::to_string(sock) ) );
+
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons(PORT);
+        addr.sin_addr.s_addr = inet_addr(IP.c_str());
+
+        if( connect( sock, ( struct sockaddr* )&addr, sizeof(addr) ) < 0 )
+            throw ServerException( "connect" );
+
+        _x = x;
+    }
+
+    Client( const Client& rhs )
+    {
+        this->sock = rhs.sock;
+        this->addr = rhs.addr;
+        this->_x = rhs._x;
+    }
+
+    Client& operator=( const Client& rhs )
+    {
+        if( rhs.sock != this->sock )
+        {
+            this->sock = rhs.sock;
+            this->addr = rhs.addr;
+            this->_x = rhs._x;
+        }
+        return *this;
+    }
+
+    ~Client() {}
+
+    void _close()
+    {
+        close(sock);
+    }
+
+    void run()
+    {
+        int r = _x;
+        thread_cout(
+            std::cout << r << ' ' << sock << std::endl
+        );
+        for(;;)
+        {
+            sendToSock( ( std::to_string(r) + ";" ) );
+            std::string msg = readFromSock();
+            
+            if(  !msg.empty() )
+            {
+                thread_cout(
+                    std::cout << msg << std::endl
+                );
+            }
+            //std::this_thread::sleep_for(std::chrono::milliseconds(2'000)); 
+        }
+    }
+
+};
+
+int main()
+{
+    const size_t I = 1'000;
+    std::vector<Client> clients;
+    for( size_t i = 0; i < I; ++i )
+    {
+        clients.emplace_back( "127.0.0.1", 8000, i );
+    }
+#if 1
+    std::vector<std::thread> threads;
+    for( size_t i = 0; i < I; ++i )
+        threads.emplace_back( &Client::run, clients[i] );
+    for( auto& it : threads )
+    {
+        //if( it.joinable() )
+        it.join();
+    }
+#endif
+    for( auto& it : clients )
+        it._close();
+    return 0;
+}
+
+
