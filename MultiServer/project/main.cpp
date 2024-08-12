@@ -45,6 +45,14 @@ private:
     int _listener;
     struct sockaddr_in _addr;
 
+    std::mutex _m_save;
+    std::mutex _m_vector;
+
+    std::vector<int> _socketsToClear;
+    std::set<int> _clients;
+    fd_set _readset;
+    timeval _timeout;
+
     int sockAccept()
     {
         int sock = accept( _listener, NULL, NULL );
@@ -88,7 +96,7 @@ private:
         }
     }
 
-
+#if 0
     void process( const int& s )
     {
         while(true)
@@ -101,7 +109,7 @@ private:
         std::cout << "sock close = " << s << std::endl;
         close(s);
     }
-
+#endif
 public:
     Server( const std::string& IP, const int& PORT )
     {
@@ -119,59 +127,154 @@ public:
         listen( _listener, 1 );
 
         std::cout << "server in system address: " << IP << ":" << PORT << std::endl;
+        
+        // Задаём таймаут
+        _timeout.tv_sec = 15;
+        _timeout.tv_usec = 0;
+    }
+
+    ~Server()
+    {
+        _clients.clear();
+    }
+
+
+    void updateClientsInfo()
+    {
+        // Заполняем множество сокетов
+        FD_ZERO( &_readset );
+        FD_SET( _listener, &_readset );
+        for( auto it = _clients.begin(); it != _clients.end(); it++ )
+            FD_SET( *it, &_readset );
+    }
+
+    // Ждём события в одном из сокетов
+    void waitEvent()
+    {
+        int mx = std::max( _listener, *max_element( _clients.begin(), _clients.end() ) );
+        if( int s = select( ( mx + 1 ), &_readset, NULL, NULL, &_timeout ); s <= 0 )
+            throw ServerException( ( "select " + std::to_string(s) ) );
+    }
+
+    void fillSockNew()
+    {
+        if( FD_ISSET( _listener, &_readset ) )
+        {
+            if( int sock = accept( _listener, NULL, NULL ); sock >= 0 )
+            {
+                fcntl( sock, F_SETFL, O_NONBLOCK );
+                _clients.insert(sock);
+                std::cout << "new socket init: " << sock << std::endl;
+            }
+            else
+                throw ServerException( "Sock no accept" );
+        }
+    }
+
+    void clearSocket( const int& sock )  // поток
+    {
+        std::cout << "socket " << sock << " free" << std::endl;
+        close(sock);
+        
+        std::lock_guard<std::mutex> mtx1_lock(_m_save);
+        {
+            std::lock_guard<std::mutex> mtx2_lock(_m_vector);
+            {
+                _socketsToClear.push_back(sock);
+            }
+        }
+    }
+
+    void process( const int& sock )
+    {
+        std::string content = readFromRecv( sock );
+        if( content.empty() )
+            clearSocket( sock );
+        else
+            sendToSock( sock, ( std::to_string(i++) + "|:" + content ) );
+    }
+
+    // Определяем тип события и выполняем соответствующие действия
+    void launchProcess()
+    {
+        for( auto it = _clients.begin(); it != _clients.end(); it++ )
+        {
+            if( FD_ISSET( *it, &_readset ) )
+                process(*it);
+        }
+    }
+
+    void clearUnusedSockets()  // Поток
+    {
+        std::lock_guard<std::mutex> mtx1_lock(_m_save);
+        {
+            std::lock_guard<std::mutex> mtx2_lock(_m_vector);
+            {
+                for( const auto& it : _socketsToClear )
+                    _clients.erase(it);
+                _socketsToClear.clear();
+            }
+        }
     }
 
     int run()
     {
-        std::set<int> clients;
-
         while( true )
         {
+            updateClientsInfo();
+            waitEvent();
+            fillSockNew();
+            launchProcess();
+            clearUnusedSockets();
+#if 0
             // Заполняем множество сокетов
-            fd_set readset;
-            FD_ZERO( &readset );
-            FD_SET( _listener, &readset );
+            FD_ZERO( &_readset );
+            FD_SET( _listener, &_readset );
 
-            for( auto it = clients.begin(); it != clients.end(); it++ )
-                FD_SET( *it, &readset );
+            for( auto it = _clients.begin(); it != _clients.end(); it++ )
+                FD_SET( *it, &_readset );
 
-            // Задаём таймаут
-            timeval timeout;
-            timeout.tv_sec = 15;
-            timeout.tv_usec = 0;
 
             // Ждём события в одном из сокетов
-            int mx = std::max( _listener, *max_element( clients.begin(), clients.end() ) );
-            if( int s = select( ( mx + 1 ), &readset, NULL, NULL, &timeout ); s <= 0 )  // Вот тут собака зарыта
+            int mx = std::max( _listener, *max_element( _clients.begin(), _clients.end() ) );
+            if( int s = select( ( mx + 1 ), &_readset, NULL, NULL, &_timeout ); s <= 0 )
                 throw ServerException( ( "select " + std::to_string(s) ) );
 
             // Определяем тип события и выполняем соответствующие действия
-            if( FD_ISSET( _listener, &readset ) )
+            if( FD_ISSET( _listener, &_readset ) )
             {
                 if( int sock = accept( _listener, NULL, NULL ); sock >= 0 )
                 {
                     fcntl( sock, F_SETFL, O_NONBLOCK );
-                    clients.insert(sock);
+                    std::cout << "socket init: " << sock << std::endl;
+                    _clients.insert(sock);
                 }
                 else
                     throw ServerException( "Sock no accept" );
             }
 
-            for( auto it = clients.begin(); it != clients.end(); it++ )
+            for( auto it = _clients.begin(); it != _clients.end(); it++ )
             {
-                if( FD_ISSET( *it, &readset ) )
+                if( FD_ISSET( *it, &_readset ) )
                 {
                     std::string content = readFromRecv( *it );
                     if( content.empty() )
                     {
                         std::cout << "socket " << *it << " free" << std::endl;
                         close(*it);
-                        clients.erase(*it);
-                        break;
+                        _socketsToClear.push_back(*it);
                     }
-                    sendToSock( *it, ( std::to_string(i++) + "|:" + content ) );
+                    else
+                    {
+                        sendToSock( *it, ( std::to_string(i++) + "|:" + content ) );
+                    }
                 }
             }
+
+            for( const auto& it : _socketsToClear )
+                _clients.erase(it);
+            _socketsToClear.clear();
+#endif
         }
         return 0;
     }
