@@ -134,7 +134,7 @@ public:
     void run()
     {
         int r = _socket;
-        for( size_t i = 0; i < 1000; ++i )
+        for( size_t i = 0; i < 10; ++i )
         {
             sendToSock( ( std::to_string(r) + ";" ) );
             std::string msg = readFromSock(); 
@@ -160,17 +160,11 @@ int main()
     std::vector<std::thread> threads;
     for( size_t i = 0; i < I; ++i )
         threads.emplace_back( &Client::run, clients[i] );
+
     for( auto& it : threads )
     {   
-        bool make = true;
-        while( make )
-        {
-            if( it.joinable() )
-            {
-                it.join();
-                make = false;
-            }
-        }
+        if( it.joinable() )
+            it.join();
     }
 
     for( auto& it : clients )
